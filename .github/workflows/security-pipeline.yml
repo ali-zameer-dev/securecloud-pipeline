@@ -1,0 +1,126 @@
+name: SecureCloud Security Pipeline
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  sast-scan:
+    name: "Security Gate 1 - SAST Scan"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Bandit
+        run: pip install bandit
+
+      - name: Run Bandit SAST Scan
+        run: |
+          bandit -r src/ -f json -o reports/bandit-report.json || true
+          bandit -r src/ 
+
+      - name: Upload SAST Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: bandit-report
+          path: reports/bandit-report.json
+
+  dependency-scan:
+    name: "Security Gate 2 - Dependency Scan"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Safety
+        run: pip install safety
+
+      - name: Run Safety Dependency Scan
+        run: |
+          pip install -r requirements.txt
+          safety check
+
+      - name: Upload Dependency Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: safety-report
+          path: reports/safety-report.json
+
+  infra-scan:
+    name: "Security Gate 3 - Infrastructure Scan"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Run Checkov IaC Scan
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: terraform/
+          framework: terraform
+          output_format: json
+          output_file_path: reports/checkov-report.json
+        continue-on-error: true
+
+      - name: Upload IaC Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: checkov-report
+          path: reports/checkov-report.json
+
+  container-scan:
+    name: "Security Gate 4 - Container Scan"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Build Docker image
+        run: docker build -t securecloud-app .
+
+      - name: Run Trivy Container Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: securecloud-app
+          format: json
+          output: reports/trivy-report.json
+          severity: CRITICAL,HIGH
+
+      - name: Upload Container Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: trivy-report
+          path: reports/trivy-report.json
+
+  security-gate:
+    name: "Final Security Gate - Pass or Block"
+    runs-on: ubuntu-latest
+    needs: [sast-scan, dependency-scan, infra-scan, container-scan]
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install bandit safety boto3
+
+      - name: Run Security Report
+        run: python scripts/scan.py
+
+      - name: Upload Final Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-report
+          path: reports/security-report.json
